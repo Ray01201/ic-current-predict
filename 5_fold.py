@@ -8,12 +8,12 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_percenta
 # =========================
 # USER SETTINGS
 # =========================
-EXCEL_PATH = r"C:\Users\jessi\OneDrive\圖片\桌面\5fold\QFP_final(RL6608 Pin88 outlier).csv"
+EXCEL_PATH = r"C:\Users\jessi\OneDrive\圖片\桌面\5fold\raw data.csv"
 TARGET_COL = "Output 1"
 
-CATEGORICAL_COLS = ["特徵值1", "特徵值3", "特徵值4", "特徵值7", "特徵值8", "特徵值24"]
+CATEGORICAL_COLS = ["特徵值1","特徵值2","特徵值3", "特徵值4", "特徵值7", "特徵值8", "特徵值24"]
 NUMERIC_COLS = [
-    "特徵值2","特徵值5","特徵值6","特徵值9","特徵值10","特徵值11","特徵值12",
+    "特徵值5","特徵值6","特徵值9","特徵值10","特徵值11","特徵值12",
     "特徵值13","特徵值14","特徵值15","特徵值16","特徵值17","特徵值18",
     "特徵值19","特徵值20","特徵值21","特徵值22","特徵值23"
 ]
@@ -214,77 +214,86 @@ def main():
     print(" - cv5_metrics.csv")
     print(" - cv5_feature_importance_agg24_summary.csv")
     print(" - cv5_feature_importance_agg24_eachfold.csv")
+    
+        # ==========================================================
+    # 10) 分析：importance >= 50% 的特徵 與 Y 的對應關係（含趨勢線/方程式/r）
     # ==========================================================
-    # 10) 分析：importance >= 50% 的特徵 與 Y 的對應關係
-    # ==========================================================
-
     import matplotlib.pyplot as plt
     from sklearn.linear_model import LinearRegression
 
-    print("\n===== Inspect Features with importance >= 50% =====")
+    print(f"\n===== Inspect Features with importance >= {LOW_TH:.0f}% =====")
 
-    important_feats = imp_summary[
-        imp_summary["importance_mean_%"] >= 50
-    ]["feature"].tolist()
-
+    important_feats = imp_summary[imp_summary["importance_mean_%"] >= LOW_TH]["feature"].tolist()
     if len(important_feats) == 0:
-        print("No feature >= 50% importance.")
+        print(f"No feature >= {LOW_TH:.0f}% importance.")
+        return
     else:
-        print("Features >= 50%:", important_feats)
+        print("Features:", important_feats)
 
     for feat in important_feats:
-
         print(f"\n--- Inspecting {feat} ---")
 
-        # 取數值
+        # 取數值（注意：feat 可能是類別欄，若轉不成數字會全 NaN）
         x = pd.to_numeric(df[feat], errors="coerce")
         keep = ~x.isna()
         x = x[keep]
         y_plot = y[keep]
 
-        # ========== 1) Scatter ==========
+        if len(x) < 10:
+            print("Not enough numeric samples to plot/regress.")
+            continue
+
+        # ===== Pearson r =====
+        pearson = np.corrcoef(x, y_plot)[0, 1]
+
+        # ===== 線性回歸 y = a x + b =====
+        X1 = x.values.reshape(-1, 1)
+        lr = LinearRegression().fit(X1, y_plot.values)
+        y_hat = lr.predict(X1)
+        a = float(lr.coef_[0])
+        b = float(lr.intercept_)
+        r2_lin = r2_score(y_plot.values, y_hat)
+
+        print("Pearson r =", round(pearson, 6))
+        print("Linear R2  =", round(r2_lin, 6))
+        print(f"Linear eq  : y = {a:.6g} * x + {b:.6g}")
+
+        # ===== 分箱趨勢（binned trend）=====
+        tmp = pd.DataFrame({"x": x, "y": y_plot})
+        tmp["bin"] = pd.qcut(tmp["x"], q=30, duplicates="drop")
+        g = tmp.groupby("bin").agg(
+            x_mean=("x", "mean"),
+            y_mean=("y", "mean")
+        ).reset_index()
+
+        # ===== 畫圖：scatter + 分箱線 + 線性趨勢線 =====
         plt.figure()
-        plt.scatter(x, y_plot, s=6)
+        plt.scatter(tmp["x"], tmp["y"], s=6, alpha=0.25)          # scatter
+        plt.plot(g["x_mean"], g["y_mean"])                        # binned trend
+
+        # 線性趨勢線：用 x 範圍畫一條直線
+        x_line = np.linspace(tmp["x"].min(), tmp["x"].max(), 200)
+        y_line = a * x_line + b
+        plt.plot(x_line, y_line)                                  # linear trend line
+
         plt.xlabel(feat)
         plt.ylabel(TARGET_COL)
         plt.title(f"{feat} vs {TARGET_COL}")
+
+        # 在圖上寫：r、R²、方程式
+        textstr = (
+            f"Pearson r = {pearson:.3f}\n"
+            f"Linear $R^2$ = {r2_lin:.3f}\n"
+            f"y = {a:.3g}x + {b:.3g}"
+        )
+        plt.text(
+            0.05, 0.95,
+            textstr,
+            transform=plt.gca().transAxes,
+            verticalalignment="top"
+        )
+
         plt.show()
-
-        # ========== 2) Pearson correlation ==========
-        if len(x) > 2:
-            corr = np.corrcoef(x, y_plot)[0,1]
-            print("Pearson correlation:", round(corr, 6))
-        else:
-            print("Not enough data for correlation.")
-
-        # ========== 3) Single-feature linear R2 ==========
-        if len(x) > 5:
-            X1 = x.values.reshape(-1,1)
-            lr = LinearRegression().fit(X1, y_plot.values)
-            pred = lr.predict(X1)
-            r2_single = r2_score(y_plot.values, pred)
-            print("Single-feature Linear R2:", round(r2_single, 6))
-        else:
-            print("Not enough data for linear regression.")
-
-        # ========== 4) 分箱趨勢線 ==========
-        try:
-            tmp = pd.DataFrame({"x": x, "y": y_plot})
-            tmp["bin"] = pd.qcut(tmp["x"], q=30, duplicates="drop")
-            g = tmp.groupby("bin").agg(
-                x_mean=("x","mean"),
-                y_mean=("y","mean")
-            ).reset_index()
-
-            plt.figure()
-            plt.scatter(tmp["x"], tmp["y"], s=4, alpha=0.2)
-            plt.plot(g["x_mean"], g["y_mean"])
-            plt.xlabel(feat)
-            plt.ylabel(TARGET_COL)
-            plt.title(f"{feat} vs {TARGET_COL} (binned trend)")
-            plt.show()
-        except:
-            print("Binning failed (可能 unique value 太少)")
 
 if __name__ == "__main__":
     main()
