@@ -1,0 +1,151 @@
+import numpy as np
+import pandas as pd
+from itertools import combinations
+from collections import Counter
+from sklearn.model_selection import KFold
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import r2_score, mean_absolute_percentage_error
+
+# =========================
+# USER SETTINGS
+# =========================
+EXCEL_PATH = r"C:\Users\user\Desktop\工工專題\raw data_正(raw data).csv"
+TARGET_COL = "Output 1"
+
+CATEGORICAL_COLS = ["特徵值1","特徵值2","特徵值3","特徵值4","特徵值7","特徵值8","特徵值24"]
+
+NUMERIC_COLS = [
+"特徵值5","特徵值6","特徵值9","特徵值10","特徵值11","特徵值12",
+"特徵值13","特徵值14","特徵值15","特徵值16","特徵值17","特徵值18",
+"特徵值19","特徵值20","特徵值21","特徵值22","特徵值23"
+]
+
+FEATURE_COLS = CATEGORICAL_COLS + NUMERIC_COLS
+
+N_SPLITS = 5
+N_ESTIMATORS = 100
+RANDOM_STATE = 36
+
+def main():
+
+    # =========================
+    # 讀資料
+    # =========================
+    df = pd.read_csv(EXCEL_PATH, encoding="utf-8-sig")
+    df.columns = df.columns.str.strip()
+
+    # =========================
+    # 處理 y
+    # =========================
+    y = df[TARGET_COL].astype(str).str.strip()
+
+    # (0.35) → -0.35
+    y = y.str.replace(r"\((.*?)\)", r"-\1", regex=True)
+    # 去掉逗號
+    y = y.str.replace(",", "", regex=False)
+    # 去掉單位 A
+    y = y.str.replace("A", "", regex=False)
+    y = pd.to_numeric(y, errors="coerce")
+    y = y.abs()
+
+    keep = ~y.isna()
+    df = df.loc[keep].copy()
+    y = y.loc[keep].copy()
+
+    # =========================
+    # 處理 X
+    # =========================
+    X_raw = df[FEATURE_COLS].copy()
+
+    # 數值欄先轉數字，處理 % 和單位
+    for col in NUMERIC_COLS:
+        s = X_raw[col].astype(str).str.strip()
+        # 處理百分比
+        has_pct = s.str.contains("%", na=False)
+        s_no_pct = s.str.replace("%","",regex=False)
+        num = pd.to_numeric(s_no_pct, errors="coerce")
+        num[has_pct] = num[has_pct]/100
+        X_raw[col] = num
+
+    # 缺值處理
+    X_raw[NUMERIC_COLS] = X_raw[NUMERIC_COLS].fillna(X_raw[NUMERIC_COLS].median())
+    X_raw[CATEGORICAL_COLS] = X_raw[CATEGORICAL_COLS].fillna("<NA>")
+
+    print("\n===== Try all C(24,3) feature combinations =====")
+
+    results = []
+
+    # =========================
+    # 所有 C(24,3) 組合
+    # =========================
+    all_combos = list(combinations(FEATURE_COLS, 3))
+    print("Total combinations:", len(all_combos))
+
+    kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=RANDOM_STATE)
+
+    for i, combo in enumerate(all_combos, 1):
+        feats = list(combo)
+        X_sub = X_raw[feats].copy()
+
+        # 類別特徵 one-hot
+        cat_cols = [c for c in feats if c in CATEGORICAL_COLS]
+        if len(cat_cols) > 0:
+            X_sub = pd.get_dummies(X_sub, columns=cat_cols, drop_first=True)
+
+        r2_list = []
+        mape_list = []
+
+        for train_idx, test_idx in kf.split(X_sub):
+            X_train, X_test = X_sub.iloc[train_idx], X_sub.iloc[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+            model = RandomForestRegressor(
+                n_estimators=N_ESTIMATORS,
+                random_state=RANDOM_STATE,
+                n_jobs=-1
+            )
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+
+            r2_list.append(r2_score(y_test, y_pred))
+            mape_list.append(mean_absolute_percentage_error(y_test, y_pred)*100)
+
+        results.append({
+            "features": combo,
+            "R2_mean": np.mean(r2_list),
+            "MAPE_mean": np.mean(mape_list)
+        })
+
+        # 每100組顯示進度
+        if i % 100 == 0 or i == len(all_combos):
+            print(f"Processed {i}/{len(all_combos)} combinations")
+
+    results_df = pd.DataFrame(results)
+
+    # =========================
+    # R2 前10
+    # =========================
+    top_r2 = results_df.sort_values("R2_mean", ascending=False).head(10)
+    print("\n===== Top 10 combinations by R2 =====")
+    print(top_r2.to_string(index=False))
+
+    # =========================
+    # MAPE 前10
+    # =========================
+    top_mape = results_df.sort_values("MAPE_mean").head(10)
+    print("\n===== Top 10 combinations by MAPE =====")
+    print(top_mape.to_string(index=False))
+
+    # =========================
+    # 統計 Top R2 特徵出現次數
+    # =========================
+    top_features = Counter()
+    for fts in top_r2['features']:
+        top_features.update(fts)
+
+    print("\n===== Top features in R2 Top10 =====")
+    for feat, cnt in top_features.most_common():
+        print(f"{feat}: {cnt} times")
+
+if __name__ == "__main__":
+    main()
